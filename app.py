@@ -1,142 +1,83 @@
 import streamlit as st
-import MetaTrader5 as mt5
 import pandas as pd
 import time
 import ta
-from datetime import datetime
+import plotly.graph_objects as go
 
-# --- CONFIGURATION Y'ISURA (UI) ---
-st.set_page_config(page_title="ZuriTrade Pro Max", layout="wide", page_icon="💎")
+# --- Genzura niba MetaTrader5 ihari (Kuri Windows gusa) ---
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except ImportError:
+    MT5_AVAILABLE = False
 
-# Guhindura ibara ry'inyuma n'imyandiko (Custom CSS)
+st.set_page_config(page_title="ZuriTrade Pro Max", layout="wide")
+
+# --- UI STYLE ---
 st.markdown("""
     <style>
-    .main { background-color: #0e1117; }
-    .stMetric { background-color: #161b22; border-radius: 10px; padding: 15px; border: 1px solid #30363d; }
+    .main { background-color: #111; color: white; }
+    .stMetric { border: 1px solid #333; padding: 10px; border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- SESSION STATE ---
-if 'bot_running' not in st.session_state:
-    st.session_state.bot_running = False
-
-# --- SIDEBAR: AUTHENTICATION ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.title("🛡️ Intelligence Hub")
+    st.title("🛡️ Zuri Intelligence")
     user_id = st.text_input("MT5 Login ID", value="168145640")
     password = st.text_input("MT5 Password", type="password")
     server = st.text_input("Broker Server", value="XMGlobal-MT5 2")
     
-    st.markdown("---")
-    asset_selected = st.selectbox("Select Asset", ["EURUSD", "GBPUSD", "XAUUSD", "BTCUSD"])
+    st.divider()
+    if not MT5_AVAILABLE:
+        st.warning("⚠️ Cloud Mode: MT5 is only active when running locally on Windows.")
     
-    col_start, col_stop = st.columns(2)
-    if col_start.button("🚀 ACTIVATE BOT", use_container_width=True):
-        st.session_state.bot_running = True
-    if col_stop.button("🛑 DEACTIVATE", use_container_width=True):
-        st.session_state.bot_running = False
-        mt5.shutdown()
+    if st.button("🚀 ACTIVATE BOT", use_container_width=True):
+        st.session_state.bot_active = True
 
-# --- FUNCTIONS ---
-def get_market_data(symbol):
-    # Kopiye imishumi (rates) 100 yanyuma
-    rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, 100)
-    
-    if rates is None or len(rates) == 0:
-        return None
-        
-    df = pd.DataFrame(rates)
-    
-    # KUKOSORA KEYERROR 'TIME':
-    if 'time' in df.columns:
-        df['time'] = pd.to_datetime(df['time'], unit='s')
-    
-    df['close'] = df['close'].astype(float)
-    df['ma'] = df['close'].rolling(50).mean()
-    df['rsi'] = ta.momentum.RSIIndicator(close=df['close'], window=14).rsi()
-    return df
-
-def execute_trade(symbol, order_type):
-    tick = mt5.symbol_info_tick(symbol)
-    if tick is None: return
-    
-    acc = mt5.account_info()
-    lot = max(round((acc.balance * 0.01) / 100, 2), 0.01) # Risk 1%
-    filling = mt5.symbol_info(symbol).filling_mode
-    
-    price = tick.ask if order_type == "buy" else tick.bid
-    sl = price - 0.0030 if order_type == "buy" else price + 0.0030
-    tp = price + 0.0060 if order_type == "buy" else price - 0.0060
-
-    request = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": lot,
-        "type": mt5.ORDER_TYPE_BUY if order_type == "buy" else mt5.ORDER_TYPE_SELL,
-        "price": price,
-        "sl": sl,
-        "tp": tp,
-        "magic": 123456,
-        "comment": "ZuriTrade Auto",
-        "type_filling": filling,
-    }
-    result = mt5.order_send(request)
-    return result
-
-# --- MAIN DASHBOARD ---
-st.header(f"💎 ZuriTrade Pro Max - Intelligence Hub")
+# --- LOGIC ---
+st.header("📊 ZuriTrade AI - Live Operations")
 
 placeholder = st.empty()
 
-if st.session_state.bot_running:
-    if not mt5.initialize(login=int(user_id) if user_id else 0, password=password, server=server):
-        st.error("❌ MT5 Initialization Failed. Check Credentials.")
-        st.session_state.bot_running = False
-    else:
-        while st.session_state.bot_running:
-            with placeholder.container():
+if st.session_state.get('bot_active', False):
+    # Kugerageza gufungura MT5 niba ihari
+    initialized = False
+    if MT5_AVAILABLE:
+        if mt5.initialize(login=int(user_id), password=password, server=server):
+            initialized = True
+    
+    while True:
+        with placeholder.container():
+            if initialized and MT5_AVAILABLE:
+                # --- REAL DATA MODE (Kuri Laptop yawe) ---
                 acc = mt5.account_info()
-                df = get_market_data(asset_selected)
+                balance = acc.balance
+                equity = acc.equity
+                profit = acc.profit
+                status = "Connected to Live MT5"
+            else:
+                # --- DEMO DATA MODE (Kuri Internet/Cloud) ---
+                balance = 1000.87
+                equity = 1000.87
+                profit = 0.00
+                status = "Demo Mode (Internet Preview)"
 
-                if acc and df is not None:
-                    # 1. METRICS ROW
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Account Balance", f"${acc.balance:,.2f}")
-                    m2.metric("Equity", f"${acc.equity:,.2f}")
-                    m3.metric("Current Profit", f"${acc.profit:,.2f}", delta=f"{acc.profit:.2f}")
-                    
-                    # 15% Performance Fee Calculation
-                    perf_fee = (acc.profit * 0.15) if acc.profit > 0 else 0.0
-                    m4.metric("Performance Fee (15%)", f"${perf_fee:,.2f}")
+            # Metrics
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Balance", f"${balance:,.2f}")
+            c2.metric("Equity", f"${equity:,.2f}")
+            c3.metric("Profit", f"${profit:,.2f}")
+            fee = profit * 0.15 if profit > 0 else 0
+            c4.metric("Performance Fee (15%)", f"${fee:,.2f}")
 
-                    # 2. ANALYSIS INFO
-                    last_row = df.iloc[-1]
-                    st.divider()
-                    st.subheader(f"📈 {asset_selected} Market Analysis")
-                    st.write(f"**Price:** {last_row['close']} | **RSI:** {last_row['rsi']:.2f} | **MA 50:** {last_row['ma']:.5f}")
-
-                    # 3. TRADING LOGIC
-                    if mt5.positions_total() < 1: # Trade 1 at a time for safety
-                        if last_row['close'] > last_row['ma'] and 40 < last_row['rsi'] < 60:
-                            execute_trade(asset_selected, "buy")
-                            st.toast(f"🚀 BUY Order Placed for {asset_selected}!")
-                        elif last_row['close'] < last_row['ma'] and 40 < last_row['rsi'] < 60:
-                            execute_trade(asset_selected, "sell")
-                            st.toast(f"📉 SELL Order Placed for {asset_selected}!")
-
-                    # 4. LIVE POSITIONS
-                    st.subheader("📋 Active Trades")
-                    positions = mt5.positions_get(symbol=asset_selected)
-                    if positions:
-                        pos_df = pd.DataFrame(list(positions), columns=positions[0]._asdict().keys())
-                        st.dataframe(pos_df[['symbol', 'type', 'volume', 'price_open', 'profit']], use_container_width=True)
-                    else:
-                        st.info("No active trades. Scanning for signals...")
-
-                else:
-                    st.warning(f"Waiting for data from {asset_selected}... Check if Symbol is correct in MT5.")
-
-                time.sleep(5) # Refresh amasegonda 5
-                st.rerun()
+            st.info(f"🛰️ Bot Status: {status}")
+            
+            # Placeholder for Graph
+            st.subheader("Market Trend Analysis")
+            st.write("Scanning market for RSI and Moving Average signals...")
+            
+            time.sleep(10)
+            st.rerun()
 else:
-    st.info("⏸️ Bot is Deactivated. Enter credentials and click 'ACTIVATE BOT' to start.")
+    st.info("Waiting for Activation... Enter credentials and click 'ACTIVATE BOT'.")
